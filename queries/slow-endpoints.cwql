@@ -1,0 +1,11 @@
+SOURCE "/aws/vendedlogs/elasticloadbalancing/loadbalancer/ALB_ACCESS_LOGS/app" START=-3600s END=0s
+| parse request_line /(?<method>\S+) (?<url>\S+) (?<protocol>\S+)/
+| parse url /https?:\/\/(?<request_host>[^\/: ]+)(?::\d+)?(?<path>\/[^? ]*)/
+| filter target_processing_time >= 0
+| stats count(*) as requests,
+    avg(target_processing_time) as avg_s,
+    pct(target_processing_time, 95) as p95_s,
+    max(target_processing_time) as max_s
+  by @logStream, request_host, domain_name, method, path
+| sort p95_s desc
+| limit 100

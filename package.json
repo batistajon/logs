@@ -1,0 +1,27 @@
+{
+  "name": "logs",
+  "version": "1.0.0",
+  "description": "Tool to help pull logs from CloudWatch Queries",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "debug": "node --inspect-brk=9229 --import tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bin": {
+    "logs": "./dist/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1141.0",
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
