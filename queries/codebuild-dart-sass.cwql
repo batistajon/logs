@@ -1,0 +1,6 @@
+SOURCE "codebuild-achilles"
+| fields @timestamp, @message, @logStream
+| filter @logStream like /tadvantagealpha-staging-themes-0/
+| filter @message like /[Ss]ass|SCSS|scss|dart [Ss]ass|dart-sass|node-sass|sass-loader|legacy JS API|legacy js api|legacy-js-api|[Dd]eprecat|@import|Undefined variable|Undefined mixin|Can't find stylesheet|not a valid CSS value|Error:.*Sass/
+| sort @timestamp desc
+| limit 200

@@ -1,0 +1,5 @@
+SOURCE "codebuild-achilles"
+| fields @timestamp, @message, @logStream
+| filter @logStream like /tadvantagealpha-staging-themes-0/
+| sort @timestamp desc
+| limit 200
