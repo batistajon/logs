@@ -1,0 +1,6 @@
+SOURCE "codebuild-achilles"
+| fields @timestamp, @message, @logStream
+| filter @logStream like /tadvantagealpha-staging-themes-(0|1|2)/
+| filter @message like /ERROR|Error:|FAILED|failed|Exception|npm ERR|yarn ERR|sass|Sass|scss|SCSS|dart-sass|node-sass|sass-loader/
+| sort @timestamp desc
+| limit 200

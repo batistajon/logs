@@ -7,8 +7,16 @@ import {
   StartQueryCommand,
 } from "@aws-sdk/client-cloudwatch-logs";
 import { Command } from "commander";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, extname, join, resolve } from "node:path";
+import {
+  buildTimestampedOutputPath,
+  parseDurationSeconds,
+  parsePositiveInteger,
+  parseSourceQuery,
+  readQueryFile,
+  saveQueryResults,
+  toQueryRows,
+  type QueryRow,
+} from "./lib.js";
 
 const program = new Command();
 
@@ -25,8 +33,6 @@ type QueryOptions = {
   save?: boolean;
   out?: string;
 };
-
-type QueryRow = Record<string, string>;
 
 type GroupsOptions = {
   region: string;
@@ -151,79 +157,6 @@ program
     }
   });
 
-async function readQueryFile(file: string): Promise<string> {
-  const path = resolve(process.cwd(), file);
-  const query = await readFile(path, "utf8");
-  const trimmedQuery = query.trim();
-
-  if (!trimmedQuery) {
-    throw new Error(`Query file is empty: ${path}`);
-  }
-
-  return trimmedQuery;
-}
-
-function parseSourceQuery(queryString: string): { logGroupName: string; queryString: string } | undefined {
-  const match = queryString.match(/^\s*SOURCE\s+"([^"]+)"[^|]*(?:\|\s*)?/i);
-
-  if (!match?.[1]) {
-    return undefined;
-  }
-
-  const withoutSource = queryString.slice(match[0].length).trim();
-
-  if (!withoutSource) {
-    throw new Error("SOURCE query is missing the query body after the first pipe.");
-  }
-
-  return {
-    logGroupName: match[1],
-    queryString: withoutSource,
-  };
-}
-
-function parseDurationSeconds(duration: string): number {
-  const match = duration.match(/^(\d+)([mhd])$/);
-
-  if (!match) {
-    throw new Error(
-      "Invalid --since value. Use a duration like 15m, 1h, or 2d.",
-    );
-  }
-
-  const amount = Number(match[1]);
-  const unit = match[2];
-
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
-    throw new Error(
-      "Invalid --since value. Duration must be greater than zero.",
-    );
-  }
-
-  switch (unit) {
-    case "m":
-      return amount * 60;
-    case "h":
-      return amount * 60 * 60;
-    case "d":
-      return amount * 24 * 60 * 60;
-    default:
-      throw new Error("Invalid --since unit. Use m, h, or d.");
-  }
-}
-
-function parsePositiveInteger(value: string, optionName: string): number {
-  const parsed = Number(value);
-
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(
-      `Invalid --${optionName} value. Use a positive whole number.`,
-    );
-  }
-
-  return parsed;
-}
-
 async function waitForQuery(client: CloudWatchLogsClient, queryId: string) {
   while (true) {
     const response = await client.send(
@@ -252,22 +185,6 @@ async function waitForQuery(client: CloudWatchLogsClient, queryId: string) {
   }
 }
 
-function toQueryRows(
-  results: NonNullable<Awaited<ReturnType<typeof waitForQuery>>>,
-): QueryRow[] {
-  return results.map((fields) => {
-    const row: QueryRow = {};
-
-    for (const field of fields) {
-      if (field.field && field.value && field.field !== "@ptr") {
-        row[field.field] = field.value;
-      }
-    }
-
-    return row;
-  });
-}
-
 function printQueryResults(rows: QueryRow[]): void {
   if (rows.length === 0) {
     console.log("No results found.");
@@ -275,60 +192,6 @@ function printQueryResults(rows: QueryRow[]): void {
   }
 
   console.table(rows);
-}
-
-async function saveQueryResults(
-  outputPath: string,
-  metadata: {
-    file: string;
-    logGroupName: string;
-    region: string;
-    since: string;
-    rows: QueryRow[];
-  },
-): Promise<void> {
-  const resolvedPath = resolve(process.cwd(), outputPath);
-  await mkdir(resolve(resolvedPath, ".."), { recursive: true });
-
-  const content = [
-    `# CloudWatch Logs query results`,
-    `file: ${metadata.file}`,
-    `logGroup: ${metadata.logGroupName}`,
-    `region: ${metadata.region}`,
-    `since: ${metadata.since}`,
-    `createdAt: ${new Date().toISOString()}`,
-    "",
-    toTsv(metadata.rows),
-  ].join("\n");
-
-  await writeFile(resolvedPath, content, "utf8");
-}
-
-function buildTimestampedOutputPath(queryFile: string): string {
-  const extension = extname(queryFile);
-  const queryName = basename(queryFile, extension);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-
-  return join("outputs", `${queryName}-${timestamp}.tsv`);
-}
-
-function toTsv(rows: QueryRow[]): string {
-  if (rows.length === 0) {
-    return "No results found.\n";
-  }
-
-  const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
-  const lines = [columns.join("\t")];
-
-  for (const row of rows) {
-    lines.push(columns.map((column) => escapeTsvValue(row[column] ?? "")).join("\t"));
-  }
-
-  return `${lines.join("\n")}\n`;
-}
-
-function escapeTsvValue(value: string): string {
-  return value.replace(/\t/g, " ").replace(/\r?\n/g, " ");
 }
 
 function sleep(milliseconds: number): Promise<void> {
