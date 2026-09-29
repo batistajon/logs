@@ -1,40 +1,45 @@
 ---
 name: logs-assistant
-description: Interpret CloudWatch or application logs, explain likely causes, suggest refined CloudWatch Logs Insights queries, or act as a DevOps/SRE debugging partner when the user provides a resource, symptom, error, latency issue, status code pattern, or log sample.
+description: Investigate CloudWatch logs with the local `logs` CLI when the user provides a resource, symptom, build or deployment issue, error pattern, latency problem, status code, or log sample. Create and run focused `.cwql` queries, interpret the evidence, and refine the investigation.
 ---
 
 # Logs Assistant
 
-Act as a practical DevOps/SRE partner. Optimize for moving from noisy logs to a narrower question, a better query, and a likely next action.
+Use the repository's `logs` CLI as the primary interface to CloudWatch Logs Insights. Move from a symptom to executed queries, evidence, and the next useful decision.
 
-## Operating loop
+## CLI contract
 
-1. Identify the investigation target.
-   - Resource: log group, CodeBuild project, pipeline, service, ALB, Lambda, ECS service, EC2 app, queue, database, API route, or domain.
-   - Symptom: build failure, error rate, latency, 5xx, 4xx, timeout, retry storm, missing logs, deployment issue, or customer impact.
-   - Time window: exact range if provided; otherwise use a safe default like the last 1h.
-   - Environment/account/region when visible.
+- Assume the user's shell is already authenticated with the intended AWS account. Run `logs` directly and let the AWS credential chain resolve credentials. Do not set `AWS_PROFILE` or ask for a profile.
+- Use the region supplied by the user or established by the investigation context. Otherwise use the CLI default and state that assumption if it affects the result.
+- Store reusable CloudWatch Logs Insights queries as `.cwql` files under `queries/`.
+- Run queries with:
 
-2. State what the current evidence says.
-   - Separate confirmed facts from hypotheses.
-   - Do not invent missing fields, services, dashboards, or infrastructure.
-   - If the sample is too small, say what is missing and continue with a narrow next query.
+  ```bash
+  logs query queries/<name>.cwql --region <region> --since <duration> --limit <number> --out outputs/<name>.tsv
+  ```
 
-3. Produce or refine a CloudWatch Logs Insights query.
-   - Prefer small, targeted queries first.
-   - Include fields that help investigation: `@timestamp`, `@message`, `@logStream`, status code, host, path, latency, request id, trace id, error reason.
-   - Use `stats` for patterns and `sort`/`limit` for examples.
-   - In this repo, prefer `.cwql` files under `queries/` and run them with the built `logs` binary: `logs query <file> --region <region> --since <duration>`. If the package is not linked, use `./dist/index.js query <file> ...`.
+- A query containing `SOURCE "<log-group>"` does not need `--group`. For an ad hoc query without `SOURCE`, pass `--group <log-group>`.
+- Discover log groups when the target is unknown:
 
-4. Interpret expected results.
-   - Explain what high, low, or empty results mean.
-   - Name the decision the query should help make.
-   - Suggest the next query based on likely outcomes.
+  ```bash
+  logs groups --region <region> --prefix <prefix>
+  ```
 
-5. Recommend next actions.
-   - Keep actions operationally safe.
-   - Prefer read-only inspection before changes.
-   - Call out permission, region, account, retention, sampling, and clock-window risks.
+- Use `--save` when a timestamped output is useful. Use `--out` when subsequent commands or comparisons need a stable path.
+- If `logs` is unavailable, report that setup problem. Do not silently replace it with a different CloudWatch client.
+- If AWS authentication fails, report the exact failure and ask the user to authenticate their shell, then retry the same `logs` command.
+
+## Investigation loop
+
+1. Establish the target from the user's context: resource or log group, symptom, time window, and region. Default to the last hour when no time window is given.
+2. Inspect existing `.cwql` and saved outputs before creating duplicates. Preserve unrelated working-tree changes.
+3. Write the narrowest query that can distinguish the leading explanations. Include useful correlation fields such as `@timestamp`, `@logStream`, request ID, trace ID, host, path, status, latency, and error reason when they exist.
+4. Run the query with `logs query` and save the output under `outputs/` when it will support follow-up analysis.
+5. Read the result. Separate confirmed facts, plausible explanations, and facts that remain unproven.
+6. Refine and rerun when the first result exposes a more precise stream, identifier, time range, or failure boundary. Stop when the evidence answers the user's question or identifies the next system that must be inspected.
+7. Explain what the result means and recommend the smallest safe next action.
+
+Prefer event examples before aggregation when the schema is uncertain. Once the relevant fields and messages are known, use `stats`, `bin`, and grouped counts to measure scope.
 
 ## Query patterns
 
@@ -56,7 +61,7 @@ fields @timestamp, @message
 | sort bin(5m) desc
 ```
 
-### CodeBuild build output
+### CodeBuild output
 
 ```sql
 SOURCE "codebuild-log-group-name"
@@ -66,16 +71,20 @@ SOURCE "codebuild-log-group-name"
 | limit 200
 ```
 
-### CodeBuild Sass / Dart Sass investigation
+For CodeBuild, inspect the project log configuration or discover streams before assuming the group is `/aws/codebuild/<project>`; projects can use a shared group and stream prefix. Include phase state lines, command output, artifact upload lines, and matched errors in the same timeline. A `SUCCEEDED` phase does not prove every command in a shell pipeline succeeded.
+
+### CodeBuild Sass and Webpack
 
 ```sql
 SOURCE "codebuild-log-group-name"
 | fields @timestamp, @message, @logStream
 | filter @logStream like /project-name-or-stream-prefix/
-| filter @message like /[Ss]ass|SCSS|scss|dart [Ss]ass|dart-sass|node-sass|sass-loader|legacy JS API|legacy js api|legacy-js-api|[Dd]eprecat|@import|Undefined variable|Undefined mixin|Can't find stylesheet|not a valid CSS value|Error:.*Sass/
+| filter @message like /ModuleBuildError|ERROR in|Command failed|exit code|[Ss]ass|SCSS|scss|dart-sass|node-sass|sass-loader|legacy JS API|[Dd]eprecat|Undefined variable|Undefined mixin|Can't find stylesheet|not a valid CSS value/
 | sort @timestamp desc
-| limit 200
+| limit 500
 ```
+
+Classify deprecation messages separately from compiler errors. For commands piped through filters such as `sed` or `tee`, correlate the tool's failure with CodeBuild phase state because missing shell `pipefail` can produce a false green build.
 
 ### ALB slow endpoints
 
@@ -93,7 +102,7 @@ fields @timestamp, @logStream, request_line, target_processing_time, elb_status_
 | limit 100
 ```
 
-### ALB 5xx / target errors
+### ALB 5xx and target errors
 
 ```sql
 fields @timestamp, @logStream, request_line, elb_status_code, target_status_code, error_reason, target_processing_time
@@ -108,7 +117,7 @@ fields @timestamp, @logStream, request_line, elb_status_code, target_status_code
 | limit 100
 ```
 
-### Find one request id or trace id
+### One request or trace
 
 ```sql
 fields @timestamp, @message, @logStream
@@ -117,39 +126,28 @@ fields @timestamp, @message, @logStream
 | limit 200
 ```
 
-## Interpretation heuristics
+## Interpretation
 
-- Empty results can mean no issue in that window, wrong region/account/log group, retention expiry, delayed ingestion, or too strict a filter.
-- For CodeBuild, check the project `logsConfig` before assuming the log group is `/aws/codebuild/<project>`; many projects use a shared group and stream prefix.
-- A successful CodeBuild status does not rule out warnings or deprecations; query for warning terms separately when upgrade work is involved.
-- ALB `elb_status_code >= 500` with missing or low target status can point to load balancer, target connection, TLS, or routing issues.
-- ALB `target_status_code >= 500` usually means the backend target returned the error.
-- High `target_processing_time` means the target was slow after the ALB connected.
-- High `request_processing_time` can indicate client upload, ALB request handling, or network behavior before target processing.
-- High `response_processing_time` can indicate slow response transfer or client/network slowness.
-- `Target.ResponseCodeMismatch`, health check failures, or connection errors suggest target group or app health issues.
+- Empty results can mean no matching event in the window, a wrong group or region, retention expiry, delayed ingestion, or an overly strict filter. Broaden one dimension at a time.
+- ALB `elb_status_code >= 500` with no target status points toward load balancer routing, connection, or TLS failures. `target_status_code >= 500` means the backend returned the error.
+- High `target_processing_time` means the target was slow after connection. High `request_processing_time` occurs before target processing; high `response_processing_time` occurs while returning the response.
+- Health-check response mismatches and connection errors make target health, listener rules, security groups, and application readiness useful next boundaries.
+- For parallel or retried copy operations, distinguish transient attempts from the final exit status, then validate the produced artifact before concluding that retries repaired every file.
 
-## Output style
+## Response
 
-Use this default shape:
+Lead with the conclusion supported by the latest query. Cite the query file, output path, relevant time window, stream or resource, and representative evidence. Clearly label any inference and state what comparison would prove it.
+
+For a short request, return the result and next query or action. For a broader investigation, organize the response as:
 
 ```markdown
-## What I see
+## What the logs prove
 
-## Likely causes
+## Likely cause
 
-## Query to run next
-
-## How to read the result
+## What remains unproven
 
 ## Next action
 ```
 
-For short questions, answer shorter. For query-only requests, provide the query plus one or two lines explaining what it proves.
-
-## Guardrails
-
-- Treat logs as potentially sensitive. Avoid repeating secrets, tokens, cookies, credentials, or personal data.
-- Do not recommend destructive production actions from logs alone.
-- Ask for one missing input only when it blocks the next useful query. Otherwise make a labeled assumption and proceed.
-- Prefer read-only AWS and CLI commands unless the user explicitly asks for remediation.
+Treat logs and saved outputs as sensitive. Do not repeat secrets, tokens, cookies, credentials, or personal data. Keep operational changes read-only unless the user explicitly requests remediation.
