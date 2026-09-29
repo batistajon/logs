@@ -77,6 +77,10 @@ SOURCE "codebuild-achilles"
 | limit 200
 ```
 
+# Versioning
+
+You can put quries in `.git/info/exclude`
+
 ## Included agent skill
 
 This repo distributes a reusable agent skill at:
